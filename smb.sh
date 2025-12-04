@@ -43,8 +43,16 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Detectar IP da interface principal
+# Detectar IP da interface principal (prioriza enp0s8 para rede interna)
 get_primary_ip() {
+    # Tentar primeiro enp0s8 (rede interna)
+    local ip_enp0s8=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+    if [ -n "$ip_enp0s8" ]; then
+        echo "$ip_enp0s8"
+        return
+    fi
+    
+    # Se não encontrar, pegar qualquer IP que não seja localhost
     ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n1
 }
 
@@ -129,14 +137,38 @@ install_samba_server() {
     read -p "Digite o nome do servidor [$(hostname)]: " SERVERNAME
     SERVERNAME=${SERVERNAME:-$(hostname)}
     
-    read -p "Digite a interface de rede (ex: enp0s3, enp0s8) [auto]: " INTERFACE
-    if [ -z "$INTERFACE" ] || [ "$INTERFACE" = "auto" ]; then
+    # Detectar ou solicitar interface
+    echo ""
+    info "Interfaces de rede disponíveis:"
+    ip -o -4 addr show | awk '{print "  • "$2" - "$4}'
+    echo ""
+    read -p "Digite a interface de rede (recomendado: enp0s8 para rede interna) [enp0s8]: " INTERFACE
+    INTERFACE=${INTERFACE:-enp0s8}
+    
+    # Verificar se a interface existe
+    if ! ip link show "$INTERFACE" &>/dev/null; then
+        warning "Interface $INTERFACE não encontrada!"
         INTERFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
-        info "Interface detectada automaticamente: $INTERFACE"
+        info "Usando interface padrão: $INTERFACE"
     fi
     
-    SERVER_IP=$(get_primary_ip)
-    info "IP do servidor: $SERVER_IP"
+    # Obter IP da interface escolhida
+    SERVER_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+    
+    if [ -z "$SERVER_IP" ]; then
+        warning "IP não detectado na interface $INTERFACE"
+        read -p "Digite o IP manualmente (ex: 192.168.100.1): " SERVER_IP
+    fi
+    
+    info "Configurando Samba para:"
+    info "  Interface: $INTERFACE"
+    info "  IP: $SERVER_IP"
+    echo ""
+    read -p "Confirma? (s/n): " CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Ss]$ ]]; then
+        error "Configuração cancelada"
+        return 1
+    fi
     
     # Criar diretórios padrão
     log "Criando diretórios de compartilhamento..."
@@ -167,7 +199,7 @@ install_samba_server() {
    guest account = nobody
    
    # Rede
-   interfaces = ${SERVER_IP}/24 127.0.0.1
+   interfaces = ${INTERFACE} ${SERVER_IP}/24 127.0.0.1
    bind interfaces only = yes
    
    # Logs
@@ -539,7 +571,14 @@ list_shares() {
     echo ""
     
     if check_samba_running; then
-        SERVER_IP=$(get_primary_ip)
+        # Priorizar enp0s8
+        SERVER_IP=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+        if [ -z "$SERVER_IP" ]; then
+            SERVER_IP=$(get_primary_ip)
+        fi
+        
+        info "Servidor: $SERVER_IP (interface enp0s8 - rede interna)"
+        echo ""
         smbclient -L "${SERVER_IP}" -N 2>/dev/null | grep "Disk" || warning "Nenhum compartilhamento encontrado"
     else
         error "Samba não está rodando"
@@ -564,9 +603,16 @@ test_samba() {
         error "Serviços Samba: Parados"
     fi
     
-    # Testar portas
-    SERVER_IP=$(get_primary_ip)
+    # Detectar IP prioritariamente da enp0s8
+    SERVER_IP=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+    if [ -z "$SERVER_IP" ]; then
+        SERVER_IP=$(get_primary_ip)
+    fi
     
+    info "Interface testada: enp0s8 (rede interna)"
+    info "IP: $SERVER_IP"
+    
+    # Testar portas
     echo ""
     info "Testando portas..."
     
@@ -586,6 +632,11 @@ test_samba() {
     echo ""
     info "Compartilhamentos disponíveis:"
     smbclient -L "${SERVER_IP}" -N 2>/dev/null | grep "Disk" || warning "Erro ao listar"
+    
+    echo ""
+    info "Para acessar do cliente, use:"
+    info "  smb://${SERVER_IP}/Publico"
+    info "  \\\\${SERVER_IP}\\Publico"
     
     echo ""
     read -p "Pressione ENTER para continuar..."
@@ -700,6 +751,21 @@ show_status() {
         
         echo ""
         
+        # Interface e IP
+        info "Interface de rede configurada:"
+        if grep -q "interfaces.*enp0s8" /etc/samba/smb.conf 2>/dev/null; then
+            success "  enp0s8 (rede interna)"
+            SERVER_IP=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+            if [ -n "$SERVER_IP" ]; then
+                info "  IP: $SERVER_IP"
+            fi
+        else
+            CONFIGURED_IF=$(grep "interfaces" /etc/samba/smb.conf 2>/dev/null | head -1 | awk '{print $3}')
+            info "  $CONFIGURED_IF"
+        fi
+        
+        echo ""
+        
         # Compartilhamentos
         info "Compartilhamentos configurados:"
         grep "^\[" /etc/samba/smb.conf 2>/dev/null | grep -v "global\|homes" || warning "Nenhum"
@@ -713,8 +779,11 @@ show_status() {
         echo ""
         
         # IP e acesso
-        SERVER_IP=$(get_primary_ip)
-        info "Acesso aos compartilhamentos:"
+        SERVER_IP=$(ip -4 addr show enp0s8 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)
+        if [ -z "$SERVER_IP" ]; then
+            SERVER_IP=$(get_primary_ip)
+        fi
+        info "Acesso aos compartilhamentos (rede interna):"
         info "  smb://${SERVER_IP}/"
         info "  \\\\${SERVER_IP}\\"
         
