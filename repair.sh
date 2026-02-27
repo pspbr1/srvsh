@@ -1,419 +1,434 @@
 #!/bin/bash
-# Script de Reparo Completo - Corrige problemas em servidor e cliente
+# Script de RESET COMPLETO - Servidor SEMED
+# Versão: 1.0
+# ATENÇÃO: Este script APAGA todas as configurações e dados!
+# Use apenas para reiniciar do zero ou em emergências
 
-set -euo pipefail
-
-# Cores
+# Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-REPAIR_LOG="/var/log/reparo_$(date +%Y%m%d_%H%M%S).txt"
-FIX_COUNT=0
+# Configurações
+BACKUP_ANTES="true"  # Fazer backup antes de resetar?
+BACKUP_DIR="/root/reset_backup_$(date +%Y%m%d_%H%M%S)"
+USUARIO="semed"
+SENHA="semed"
 
-print_header() {
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}"
-}
+# Funções de mensagem
+print_message() { echo -e "${GREEN}[$(date +"%H:%M:%S")] $1${NC}"; }
+print_warning() { echo -e "${YELLOW}[$(date +"%H:%M:%S")] ⚠️ $1${NC}"; }
+print_error() { echo -e "${RED}[$(date +"%H:%M:%S")] ❌ $1${NC}"; }
+print_info() { echo -e "${BLUE}[$(date +"%H:%M:%S")] ℹ️ $1${NC}"; }
 
-log_fix() {
-    echo -e "${GREEN}[REPARO]${NC} $1"
-    ((FIX_COUNT++))
-    echo "REPARO: $1" >> "$REPAIR_LOG"
-}
+# Verificar se é root
+if [[ $EUID -ne 0 ]]; then
+   print_error "Este script deve ser executado como root!"
+   exit 1
+fi
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+# BANNER DE AVISO
+clear
+echo -e "${RED}"
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║                     ⚠️  ATENÇÃO  ⚠️                          ║"
+echo "║                                                            ║"
+echo "║   Este script irá APAGAR COMPLETAMENTE:                   ║"
+echo "║   ✓ Todas as configurações de serviços                     ║"
+echo "║   ✓ Todos os bancos de dados                               ║"
+echo "║   ✓ Todos os arquivos e documentos                         ║"
+echo "║   ✓ Configurações de email                                 ║"
+echo "║   ✓ Logs e dados de aplicações                             ║"
+echo "║                                                            ║"
+echo "║   O sistema voltará ao estado PÓS-INSTALAÇÃO do Ubuntu!    ║"
+echo "║                                                            ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo -e "${NC}"
 
-# ============================================================================
-# FUNÇÕES DE REPARO
-# ============================================================================
+echo ""
+print_warning "DADOS QUE SERÃO APAGADOS:"
+echo "- Bancos de dados (MySQL, PostgreSQL)"
+echo "- Arquivos em /dados (documentos, imagens, vídeos)"
+echo "- Configurações do Nginx, PHP, Postfix, Dovecot"
+echo "- Logs do sistema"
+echo "- Aplicações web (Moodle, Nextcloud)"
+echo ""
+print_info "Será criado um backup em: $BACKUP_DIR (se a opção estiver ativada)"
+echo ""
 
-reparar_rede() {
-    print_header "REPARANDO REDE E NAT"
-    
-    # Corrigir IP forwarding
-    if [ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]; then
-        echo 1 > /proc/sys/net/ipv4/ip_forward
-        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-        sysctl -p
-        log_fix "IP forwarding habilitado"
-    fi
-    
-    # Corrigir NAT
-    if ! iptables -t nat -C POSTROUTING -o enp0s3 -j MASQUERADE 2>/dev/null; then
-        iptables -t nat -A POSTROUTING -o enp0s3 -j MASQUERADE
-        iptables -A FORWARD -i enp0s8 -o enp0s3 -j ACCEPT
-        iptables -A FORWARD -i enp0s3 -o enp0s8 -m state --state RELATED,ESTABLISHED -j ACCEPT
-        
-        if command -v netfilter-persistent &>/dev/null; then
-            netfilter-persistent save
-        else
-            apt install -y netfilter-persistent
-            netfilter-persistent save
-        fi
-        log_fix "Regras NAT configuradas e salvas"
-    fi
-    
-    # Verificar interface LAN
-    if ! ip link show enp0s8 &>/dev/null; then
-        log_info "Interface enp0s8 não encontrada. Verifique nomes das interfaces."
-    else
-        if ! ip addr show enp0s8 | grep -q "inet "; then
-            log_info "Configurando IP na enp0s8..."
-            cat > /etc/netplan/99-fix.yaml <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    enp0s8:
-      addresses: [192.168.0.1/24]
-      dhcp4: no
-EOF
-            netplan apply
-            log_fix "IP configurado na interface enp0s8"
-        fi
-    fi
-}
-
-reparar_dhcp() {
-    print_header "REPARANDO SERVIDOR DHCP"
-    
-    # Instalar se necessário
-    if ! command -v dhcpd &>/dev/null; then
-        apt install -y isc-dhcp-server
-        log_fix "DHCP instalado"
-    fi
-    
-    # Corrigir configuração
-    cat > /etc/dhcp/dhcpd.conf <<EOF
-default-lease-time 600;
-max-lease-time 7200;
-authoritative;
-subnet 192.168.0.0 netmask 255.255.255.0 {
-  range 192.168.0.100 192.168.0.200;
-  option routers 192.168.0.1;
-  option subnet-mask 255.255.255.0;
-  option domain-name-servers 1.1.1.1, 8.8.8.8;
-}
-EOF
-    
-    echo "INTERFACESv4=\"enp0s8\"" > /etc/default/isc-dhcp-server
-    
-    systemctl restart isc-dhcp-server
-    systemctl enable isc-dhcp-server
-    log_fix "Configuração DHCP corrigida"
-}
-
-reparar_email_servidor() {
-    print_header "REPARANDO EMAIL NO SERVIDOR"
-    
-    # Verificar Postfix
-    if ! systemctl is-active --quiet postfix; then
-        apt install -y postfix mailutils
-        log_fix "Postfix instalado/reinstalado"
-    fi
-    
-    # Configuração correta para servidor
-    postconf -e "myhostname = $(hostname).localdomain"
-    postconf -e "mydomain = localdomain"
-    postconf -e "inet_interfaces = all"
-    postconf -e "mydestination = \$myhostname, localhost.\$mydomain, localhost, \$mydomain"
-    postconf -e "mynetworks = 127.0.0.0/8 192.168.0.0/24"
-    postconf -e "relayhost = "
-    postconf -e "home_mailbox = Maildir/"
-    
-    systemctl restart postfix
-    log_fix "Postfix configurado como servidor"
-    
-    # Dovecot
-    if ! systemctl is-active --quiet dovecot; then
-        apt install -y dovecot-core dovecot-imapd dovecot-pop3d
-    fi
-    
-    # Configuração básica Dovecot
-    cat > /etc/dovecot/conf.d/10-mail.conf <<EOF
-mail_location = maildir:~/Maildir
-EOF
-    
-    systemctl restart dovecot
-    log_fix "Dovecot configurado"
-    
-    # Liberar firewall
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        ufw allow 25/tcp
-        ufw allow 143/tcp
-        ufw allow 110/tcp
-        log_fix "Portas de email liberadas no firewall"
-    fi
-}
-
-reparar_email_cliente() {
-    print_header "REPARANDO EMAIL NO CLIENTE"
-    
-    read -p "Digite o IP do servidor de email: " IP_SERVIDOR
-    
-    if ! systemctl is-active --quiet postfix; then
-        apt install -y postfix mailutils
-    fi
-    
-    # Configuração correta para cliente
-    postconf -e "myhostname = $(hostname).localdomain"
-    postconf -e "mydomain = localdomain"
-    postconf -e "relayhost = [$IP_SERVIDOR]"
-    postconf -e "inet_interfaces = loopback-only"
-    postconf -e "mydestination = localhost"
-    postconf -e "mynetworks = 127.0.0.0/8"
-    
-    # Adicionar ao /etc/hosts
-    if ! grep -q "$IP_SERVIDOR" /etc/hosts; then
-        echo "$IP_SERVIDOR    servidor.localdomain servidor" >> /etc/hosts
-        log_fix "Servidor adicionado ao /etc/hosts"
-    fi
-    
-    systemctl restart postfix
-    log_fix "Cliente configurado para usar relay: $IP_SERVIDOR"
-}
-
-reparar_samba() {
-    print_header "REPARANDO SAMBA"
-    
-    if ! systemctl is-active --quiet smbd; then
-        apt install -y samba
-        log_fix "Samba instalado"
-    fi
-    
-    # Configuração básica
-    SHARED_DIR="/srv/compartilhado"
-    mkdir -p $SHARED_DIR
-    chmod 777 $SHARED_DIR
-    
-    if ! grep -q "^\[Compartilhado\]" /etc/samba/smb.conf; then
-        cat >> /etc/samba/smb.conf <<EOF
-
-[Compartilhado]
-   path = $SHARED_DIR
-   browseable = yes
-   writable = yes
-   guest ok = yes
-   public = yes
-EOF
-        log_fix "Compartilhamento Samba adicionado"
-    fi
-    
-    systemctl restart smbd nmbd
-    systemctl enable smbd nmbd
-    
-    # Liberar firewall
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        ufw allow samba
-        log_fix "Samba liberado no firewall"
-    fi
-}
-
-reparar_web() {
-    print_header "REPARANDO WEB SERVER"
-    
-    # Apache
-    if ! systemctl is-active --quiet apache2; then
-        apt install -y apache2
-        log_fix "Apache instalado"
-    fi
-    
-    # MySQL/MariaDB
-    if ! systemctl is-active --quiet mysql && ! systemctl is-active --quiet mariadb; then
-        apt install -y mysql-server
-        log_fix "MySQL instalado"
-    fi
-    
-    systemctl restart apache2
-    if systemctl list-unit-files | grep -q "mysql.service"; then
-        systemctl restart mysql
-    else
-        systemctl restart mariadb
-    fi
-    
-    log_fix "Serviços web reiniciados"
-    
-    # Liberar firewall
-    if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
-        ufw allow 80/tcp
-        ufw allow 443/tcp
-        log_fix "Portas web liberadas no firewall"
-    fi
-}
-
-reparar_squid() {
-    print_header "REPARANDO SQUID"
-    
-    if ! systemctl is-active --quiet squid; then
-        apt install -y squid
-        log_fix "Squid instalado"
-    fi
-    
-    # Configuração básica
-    cat > /etc/squid/squid.conf <<EOF
-http_port 3128
-acl localnet src 192.168.0.0/24
-http_access allow localnet
-http_access deny all
-EOF
-    
-    systemctl restart squid
-    log_fix "Squid configurado e reiniciado"
-}
-
-reparar_nfs() {
-    print_header "REPARANDO NFS"
-    
-    if ! systemctl is-active --quiet nfs-server; then
-        apt install -y nfs-kernel-server
-        log_fix "NFS instalado"
-    fi
-    
-    # Configuração básica
-    NFS_SHARE="/srv/nfs"
-    mkdir -p $NFS_SHARE
-    chmod 777 $NFS_SHARE
-    
-    if [ ! -f "/etc/exports" ] || ! grep -q "$NFS_SHARE" /etc/exports; then
-        echo "$NFS_SHARE 192.168.0.0/24(rw,sync,no_subtree_check)" > /etc/exports
-        exportfs -a
-        log_fix "Exportação NFS configurada"
-    fi
-    
-    systemctl restart nfs-server
-    log_fix "NFS reiniciado"
-}
-
-reparar_firewall() {
-    print_header "REPARANDO FIREWALL"
-    
-    if ! command -v ufw &>/dev/null; then
-        apt install -y ufw
-        log_fix "UFW instalado"
-    fi
-    
-    # Configuração segura
-    ufw --force reset
-    ufw default deny incoming
-    ufw default allow outgoing
-    ufw allow ssh
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow 25/tcp
-    ufw allow 143/tcp
-    ufw allow 110/tcp
-    ufw allow 3128/tcp
-    
-    ufw --force enable
-    log_fix "Firewall configurado com regras padrão"
-}
-
-limpar_fila_emails() {
-    print_header "LIMPANDO FILA DE EMAILS"
-    
-    if command -v mailq &>/dev/null; then
-        QUEUE_COUNT=$(mailq | grep -c "^[A-F0-9]" 2>/dev/null || echo "0")
-        if [ "$QUEUE_COUNT" -gt 0 ]; then
-            postsuper -d ALL
-            log_fix "Fila de emails limpa ($QUEUE_COUNT emails removidos)"
-        else
-            log_info "Fila de emails vazia"
-        fi
-    fi
-}
-
-# ============================================================================
-# FUNÇÃO PRINCIPAL
-# ============================================================================
-
-main() {
-    echo "Script de Reparo Completo"
-    echo "Este script corrige problemas comuns em servidores e clientes"
-    echo "Log de reparos: $REPAIR_LOG"
-    echo ""
-    
-    echo "Selecione o tipo de reparo:"
-    echo "1) Reparo COMPLETO do servidor"
-    echo "2) Reparo do CLIENTE de email apenas"
-    echo "3) Reparo específico de um serviço"
-    read -p "Opção [1-3]: " OPCAO
-    
-    case $OPCAO in
-        1)
-            echo "Iniciando reparo completo do servidor..."
-            reparar_rede
-            reparar_dhcp
-            reparar_email_servidor
-            reparar_samba
-            reparar_web
-            reparar_squid
-            reparar_nfs
-            reparar_firewall
-            limpar_fila_emails
-            ;;
-        2)
-            echo "Reparando apenas cliente de email..."
-            reparar_email_cliente
-            limpar_fila_emails
-            ;;
-        3)
-            echo "Selecione o serviço para reparar:"
-            echo "1) Rede/NAT"
-            echo "2) DHCP"
-            echo "3) Email (servidor)"
-            echo "4) Email (cliente)"
-            echo "5) Samba"
-            echo "6) Web Server"
-            echo "7) Squid"
-            echo "8) NFS"
-            echo "9) Firewall"
-            read -p "Opção: " SERVICO
-            
-            case $SERVICO in
-                1) reparar_rede ;;
-                2) reparar_dhcp ;;
-                3) reparar_email_servidor ;;
-                4) reparar_email_cliente ;;
-                5) reparar_samba ;;
-                6) reparar_web ;;
-                7) reparar_squid ;;
-                8) reparar_nfs ;;
-                9) reparar_firewall ;;
-                *) echo "Opção inválida"; exit 1 ;;
-            esac
-            ;;
-        *)
-            echo "Opção inválida"
-            exit 1
-            ;;
-    esac
-    
-    # RESUMO
-    print_header "REPARO CONCLUÍDO"
-    echo ""
-    echo "Reparos aplicados: $FIX_COUNT"
-    echo "Log completo: $REPAIR_LOG"
-    echo ""
-    echo "Recomendações pós-reparo:"
-    echo "1. Execute o diagnóstico: sudo ./diagnostico_sistema.sh"
-    echo "2. Teste cada serviço manualmente"
-    echo "3. Reinicie o servidor se necessário: sudo reboot"
-    echo ""
-    echo "Para testar email:"
-    echo "  Servidor: echo 'Teste' | mail -s 'Teste' root@localhost"
-    echo "  Cliente: echo 'Teste' | mail -s 'Teste' usuario@servidor.localdomain"
-    echo ""
-    echo "=========================================="
-}
-
-# Executar
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Execute como root: sudo $0${NC}"
+# Pergunta de confirmação
+read -p "Digite 'RESETAR SEMED' para confirmar: " confirmacao
+if [[ "$confirmacao" != "RESETAR SEMED" ]]; then
+    print_error "Confirmação incorreta. Operação cancelada."
     exit 1
 fi
 
-main
+# Segunda confirmação
+read -p "Tem CERTEZA? Esta ação é IRREVERSÍVEL! (s/N): " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Ss]$ ]]; then
+    print_error "Operação cancelada."
+    exit 1
+fi
+
+# INÍCIO DO RESET
+print_message "INICIANDO RESET COMPLETO DO SERVIDOR..."
+echo "=================================================="
+
+# 1. FAZER BACKUP (opcional)
+if [[ "$BACKUP_ANTES" == "true" ]]; then
+    print_message "1. Criando backup de segurança..."
+    mkdir -p $BACKUP_DIR
+    
+    # Backup de configurações importantes
+    print_info "Backup de configurações..."
+    cp -r /etc/nginx $BACKUP_DIR/nginx.conf 2>/dev/null
+    cp -r /etc/mysql $BACKUP_DIR/mysql.conf 2>/dev/null
+    cp -r /etc/postfix $BACKUP_DIR/postfix.conf 2>/dev/null
+    cp -r /etc/dovecot $BACKUP_DIR/dovecot.conf 2>/dev/null
+    cp -r /etc/php $BACKUP_DIR/php.conf 2>/dev/null
+    cp -r /etc/fail2ban $BACKUP_DIR/fail2ban.conf 2>/dev/null
+    
+    # Backup de listas de usuários
+    cp /etc/passwd $BACKUP_DIR/passwd.backup
+    cp /etc/shadow $BACKUP_DIR/shadow.backup
+    cp /etc/group $BACKUP_DIR/group.backup
+    
+    # Backup de bancos de dados (se ainda estiverem funcionando)
+    if systemctl is-active --quiet mysql; then
+        print_info "Backup dos bancos MySQL..."
+        mysqldump -u root -p$SENHA --all-databases > $BACKUP_DIR/mysql_backup.sql 2>/dev/null
+    fi
+    
+    if systemctl is-active --quiet postgresql; then
+        print_info "Backup dos bancos PostgreSQL..."
+        sudo -u postgres pg_dumpall > $BACKUP_DIR/postgres_backup.sql 2>/dev/null
+    fi
+    
+    # Backup de dados importantes
+    if [ -d "/dados" ]; then
+        print_info "Backup de dados (isso pode levar alguns minutos)..."
+        tar -czf $BACKUP_DIR/dados_backup.tar.gz /dados 2>/dev/null
+    fi
+    
+    print_message "Backup concluído em: $BACKUP_DIR"
+fi
+
+# 2. PARAR TODOS OS SERVIÇOS
+print_message "2. Parando todos os serviços..."
+
+SERVICOS=(
+    "nginx"
+    "php8.1-fpm"
+    "mysql"
+    "mariadb"
+    "postgresql"
+    "postfix"
+    "dovecot"
+    "fail2ban"
+    "ufw"
+    "clamav-daemon"
+    "spamassassin"
+    "amavis"
+    "redis-server"
+    "memcached"
+)
+
+for servico in "${SERVICOS[@]}"; do
+    if systemctl is-active --quiet $servico 2>/dev/null; then
+        print_info "Parando $servico..."
+        systemctl stop $servico
+        systemctl disable $servico 2>/dev/null
+    fi
+done
+
+# 3. REMOVER PACOTES E CONFIGURAÇÕES
+print_message "3. Removendo pacotes e configurações..."
+
+# 3.1 Remover servidores web
+print_info "Removendo Nginx e PHP..."
+apt-get purge -y nginx* php* --auto-remove
+
+# 3.2 Remover bancos de dados
+print_info "Removendo bancos de dados..."
+apt-get purge -y mysql* mariadb* postgresql* --auto-remove
+
+# 3.3 Remover servidor de email
+print_info "Removendo servidor de email..."
+apt-get purge -y postfix* dovecot* mailutils --auto-remove
+
+# 3.4 Remover ferramentas de segurança
+print_info "Removendo ferramentas de segurança..."
+apt-get purge -y fail2ban* clamav* spamassassin* amavisd* --auto-remove
+
+# 3.5 Remover outras ferramentas
+print_info "Removendo outras ferramentas..."
+apt-get purge -y redis* memcached* --auto-remove
+
+# 4. APAGAR ARQUIVOS DE CONFIGURAÇÃO
+print_message "4. Apagando arquivos de configuração..."
+
+# Diretórios de configuração
+CONFIG_DIRS=(
+    "/etc/nginx"
+    "/etc/php"
+    "/etc/mysql"
+    "/etc/postgresql"
+    "/etc/postfix"
+    "/etc/dovecot"
+    "/etc/fail2ban"
+    "/etc/clamav"
+    "/etc/spamassassin"
+    "/etc/amavis"
+    "/etc/redis"
+    "/etc/memcached"
+    "/etc/phpmyadmin"
+    "/var/lib/mysql"
+    "/var/lib/postgresql"
+    "/var/lib/redis"
+    "/var/lib/clamav"
+    "/var/spool/postfix"
+    "/var/lib/dovecot"
+)
+
+for dir in "${CONFIG_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        print_info "Removendo $dir..."
+        rm -rf "$dir"
+    fi
+done
+
+# 5. APAGAR DADOS E ARQUIVOS
+print_message "5. Apagando dados e arquivos..."
+
+# Diretórios de dados
+DATA_DIRS=(
+    "/dados"
+    "/var/www"
+    "/var/www/html"
+    "/var/www/semed"
+    "/var/mail"
+    "/home/$USUARIO/dados"
+    "/home/$USUARIO/.moodle"
+    "/home/$USUARIO/.nextcloud"
+    "/var/log/nginx"
+    "/var/log/mysql"
+    "/var/log/postgresql"
+    "/var/log/postfix"
+    "/var/log/dovecot"
+    "/var/log/fail2ban"
+    "/var/log/clamav"
+    "/tmp/moodle_*"
+    "/tmp/nextcloud_*"
+)
+
+for dir in "${DATA_DIRS[@]}"; do
+    if [ -e "$dir" ]; then
+        print_info "Removendo $dir..."
+        rm -rf "$dir"
+    fi
+done
+
+# 6. APAGAR CONFIGURAÇÕES DE USUÁRIOS
+print_message "6. Resetando configurações de usuários..."
+
+# Remover usuário semed se existir
+if id "$USUARIO" &>/dev/null; then
+    print_info "Removendo usuário $USUARIO..."
+    userdel -r "$USUARIO" 2>/dev/null
+fi
+
+# Remover grupos criados
+for grupo in semed www-data semed-admins; do
+    if getent group "$grupo" >/dev/null; then
+        groupdel "$grupo" 2>/dev/null
+    fi
+done
+
+# 7. LIMPAR ARQUIVOS TEMPORÁRIOS
+print_message "7. Limpando arquivos temporários..."
+
+rm -rf /tmp/*
+rm -rf /var/tmp/*
+apt-get clean
+apt-get autoclean
+apt-get autoremove -y
+
+# 8. RESETAR FIREWALL
+print_message "8. Resetando firewall..."
+
+ufw --force disable
+ufw --force reset
+iptables -F
+iptables -X
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# 9. RECRIAR ESTRUTURA BÁSICA
+print_message "9. Recriando estrutura mínima..."
+
+# Recriar usuário semed
+useradd -m -s /bin/bash -G sudo "$USUARIO"
+echo "$USUARIO:$SENHA" | chpasswd
+
+# Criar diretório web básico
+mkdir -p /var/www/html
+echo "<h1>Servidor SEMED - Resetado com sucesso!</h1>" > /var/www/html/index.html
+chmod 755 /var/www/html
+
+# 10. REINSTALAR PACOTES BÁSICOS
+print_message "10. Reinstalando pacotes básicos..."
+
+apt-get update
+apt-get install -y \
+    curl \
+    wget \
+    git \
+    vim \
+    htop \
+    net-tools \
+    ufw \
+    openssh-server \
+    ca-certificates
+
+# 11. REINSTALAR FIREWALL BÁSICO
+print_message "11. Configurando firewall básico..."
+
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+echo "y" | ufw enable
+
+# 12. LIMPAR LOGS E HISTÓRICOS
+print_message "12. Limpando logs e históricos..."
+
+# Limpar logs do sistema
+find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
+find /var/log -type f -name "*.gz" -delete
+find /var/log -type f -name "*.old" -delete
+
+# Limpar histórico dos usuários
+for user_home in /home/* /root; do
+    if [ -f "$user_home/.bash_history" ]; then
+        > "$user_home/.bash_history"
+    fi
+    if [ -f "$user_home/.mysql_history" ]; then
+        > "$user_home/.mysql_history"
+    fi
+    if [ -f "$user_home/.psql_history" ]; then
+        > "$user_home/.psql_history"
+    fi
+done
+
+# 13. VERIFICAÇÃO FINAL
+print_message "13. Verificando limpeza..."
+
+# Verificar serviços removidos
+SERVICOS_VERIFICAR=(
+    "nginx"
+    "mysql"
+    "postgresql"
+    "postfix"
+    "dovecot"
+)
+
+print_info "Serviços ainda presentes no sistema:"
+for servico in "${SERVICOS_VERIFICAR[@]}"; do
+    if systemctl list-unit-files | grep -q "$servico"; then
+        print_warning "⚠️ $servico ainda encontrado"
+    else
+        print_message "✅ $servico removido"
+    fi
+done
+
+# 14. GERAR RELATÓRIO DE RESET
+print_message "14. Gerando relatório de reset..."
+
+cat > /root/relatorio_reset.txt <<EOF
+==================================================
+RELATÓRIO DE RESET DO SERVIDOR SEMED
+==================================================
+Data do reset: $(date)
+Executado por: root
+
+BACKUP REALIZADO:
+----------------
+Diretório de backup: $BACKUP_DIR
+Tamanho do backup: $(du -sh $BACKUP_DIR 2>/dev/null | cut -f1)
+
+SERVIÇOS REMOVIDOS:
+------------------
+✓ Nginx + PHP
+✓ MySQL/MariaDB
+✓ PostgreSQL
+✓ Postfix + Dovecot (email)
+✓ Fail2ban + ClamAV (segurança)
+✓ Redis + Memcached (cache)
+
+ARQUIVOS APAGADOS:
+-----------------
+✓ Configurações (/etc/*)
+✓ Dados (/dados/*)
+✓ Logs (/var/log/*)
+✓ Web (/var/www/*)
+
+ESTADO ATUAL:
+------------
+Sistema base: $(lsb_release -d | cut -f2)
+Kernel: $(uname -r)
+Usuário padrão: $USUARIO
+Senha: $SENHA
+Firewall: Ativo (apenas SSH)
+Espaço em disco: $(df -h / | awk 'NR==2 {print $4}') livres
+
+PRÓXIMOS PASSOS:
+---------------
+1. Execute o script de instalação novamente (se desejar)
+2. Ou mantenha apenas como servidor básico
+3. Configure backups externos
+4. Altere a senha do usuário $USUARIO
+
+==================================================
+SERVIDOR RESETADO COM SUCESSO!
+==================================================
+EOF
+
+# RESULTADO FINAL
+echo ""
+echo "=================================================="
+print_message "✅ RESET CONCLUÍDO COM SUCESSO!"
+echo "=================================================="
+echo ""
+print_info "📁 Relatório do reset: /root/relatorio_reset.txt"
+if [[ "$BACKUP_ANTES" == "true" ]]; then
+    print_info "💾 Backup dos dados: $BACKUP_DIR"
+fi
+print_info "👤 Usuário recriado: $USUARIO / $SENHA"
+print_info "🌐 IP do servidor: $(hostname -I | awk '{print $1}')"
+print_info "🔒 Firewall ativo: apenas porta SSH liberada"
+echo ""
+print_warning "⚠️  Recomendações:"
+echo "   - Altere a senha do usuário $USUARIO imediatamente"
+echo "   - Verifique se todos os dados foram realmente apagados"
+echo "   - Execute o script de instalação novamente se necessário"
+echo "   - Configure um backup externo antes de reinstalar"
+echo ""
+
+# Perguntar sobre reinicialização
+read -p "Deseja reiniciar o servidor agora? (s/N): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Ss]$ ]]; then
+    print_message "Reiniciando em 10 segundos..."
+    sleep 10
+    reboot
+else
+    print_info "Lembre-se de reiniciar o servidor em breve para aplicar todas as mudanças."
+    print_info "Para reiniciar manualmente: sudo reboot"
+fi
