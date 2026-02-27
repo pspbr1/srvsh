@@ -1,434 +1,307 @@
 #!/bin/bash
-# Script de RESET COMPLETO - Servidor SEMED
-# Versão: 1.0
-# ATENÇÃO: Este script APAGA todas as configurações e dados!
-# Use apenas para reiniciar do zero ou em emergências
+
+# ============================================================================
+# SCRIPT DE LIMPEZA TOTAL DO SERVIDOR
+# ATENÇÃO: Este script remove TODAS as configurações e dados
+# Use apenas se tiver CERTEZA absoluta do que está fazendo
+# ============================================================================
 
 # Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configurações
-BACKUP_ANTES="true"  # Fazer backup antes de resetar?
-BACKUP_DIR="/root/reset_backup_$(date +%Y%m%d_%H%M%S)"
-USUARIO="semed"
-SENHA="semed"
+echo -e "${RED}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${RED}║     ATENÇÃO: SCRIPT DE LIMPEZA TOTAL DO SERVIDOR            ║${NC}"
+echo -e "${RED}║     TODOS OS DADOS SERÃO PERMANENTEMENTE REMOVIDOS          ║${NC}"
+echo -e "${RED}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo
 
-# Funções de mensagem
-print_message() { echo -e "${GREEN}[$(date +"%H:%M:%S")] $1${NC}"; }
-print_warning() { echo -e "${YELLOW}[$(date +"%H:%M:%S")] ⚠️ $1${NC}"; }
-print_error() { echo -e "${RED}[$(date +"%H:%M:%S")] ❌ $1${NC}"; }
-print_info() { echo -e "${BLUE}[$(date +"%H:%M:%S")] ℹ️ $1${NC}"; }
-
-# Verificar se é root
+# Verificar se está rodando como root
 if [[ $EUID -ne 0 ]]; then
-   print_error "Este script deve ser executado como root!"
+   echo -e "${RED}Este script deve ser executado como root (use sudo)${NC}"
    exit 1
 fi
 
-# BANNER DE AVISO
-clear
-echo -e "${RED}"
-echo "╔════════════════════════════════════════════════════════════╗"
-echo "║                     ⚠️  ATENÇÃO  ⚠️                          ║"
-echo "║                                                            ║"
-echo "║   Este script irá APAGAR COMPLETAMENTE:                   ║"
-echo "║   ✓ Todas as configurações de serviços                     ║"
-echo "║   ✓ Todos os bancos de dados                               ║"
-echo "║   ✓ Todos os arquivos e documentos                         ║"
-echo "║   ✓ Configurações de email                                 ║"
-echo "║   ✓ Logs e dados de aplicações                             ║"
-echo "║                                                            ║"
-echo "║   O sistema voltará ao estado PÓS-INSTALAÇÃO do Ubuntu!    ║"
-echo "║                                                            ║"
-echo "╚════════════════════════════════════════════════════════════╝"
-echo -e "${NC}"
-
-echo ""
-print_warning "DADOS QUE SERÃO APAGADOS:"
-echo "- Bancos de dados (MySQL, PostgreSQL)"
-echo "- Arquivos em /dados (documentos, imagens, vídeos)"
-echo "- Configurações do Nginx, PHP, Postfix, Dovecot"
-echo "- Logs do sistema"
-echo "- Aplicações web (Moodle, Nextcloud)"
-echo ""
-print_info "Será criado um backup em: $BACKUP_DIR (se a opção estiver ativada)"
-echo ""
-
-# Pergunta de confirmação
-read -p "Digite 'RESETAR SEMED' para confirmar: " confirmacao
-if [[ "$confirmacao" != "RESETAR SEMED" ]]; then
-    print_error "Confirmação incorreta. Operação cancelada."
-    exit 1
+# Confirmação em três níveis
+echo -e "${YELLOW}NÍVEL 1: Você tem certeza que deseja limpar TUDO? (s/N)${NC}"
+read -r confirm1
+if [[ ! "$confirm1" =~ ^[sS]$ ]]; then
+    echo -e "${GREEN}Operação cancelada.${NC}"
+    exit 0
 fi
 
-# Segunda confirmação
-read -p "Tem CERTEZA? Esta ação é IRREVERSÍVEL! (s/N): " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Ss]$ ]]; then
-    print_error "Operação cancelada."
-    exit 1
+echo -e "${YELLOW}NÍVEL 2: TODOS OS DADOS SERÃO PERDIDOS. Confirma? (SIM/NÃO)${NC}"
+read -r confirm2
+if [[ "$confirm2" != "SIM" ]]; then
+    echo -e "${GREEN}Operação cancelada.${NC}"
+    exit 0
 fi
 
-# INÍCIO DO RESET
-print_message "INICIANDO RESET COMPLETO DO SERVIDOR..."
-echo "=================================================="
-
-# 1. FAZER BACKUP (opcional)
-if [[ "$BACKUP_ANTES" == "true" ]]; then
-    print_message "1. Criando backup de segurança..."
-    mkdir -p $BACKUP_DIR
-    
-    # Backup de configurações importantes
-    print_info "Backup de configurações..."
-    cp -r /etc/nginx $BACKUP_DIR/nginx.conf 2>/dev/null
-    cp -r /etc/mysql $BACKUP_DIR/mysql.conf 2>/dev/null
-    cp -r /etc/postfix $BACKUP_DIR/postfix.conf 2>/dev/null
-    cp -r /etc/dovecot $BACKUP_DIR/dovecot.conf 2>/dev/null
-    cp -r /etc/php $BACKUP_DIR/php.conf 2>/dev/null
-    cp -r /etc/fail2ban $BACKUP_DIR/fail2ban.conf 2>/dev/null
-    
-    # Backup de listas de usuários
-    cp /etc/passwd $BACKUP_DIR/passwd.backup
-    cp /etc/shadow $BACKUP_DIR/shadow.backup
-    cp /etc/group $BACKUP_DIR/group.backup
-    
-    # Backup de bancos de dados (se ainda estiverem funcionando)
-    if systemctl is-active --quiet mysql; then
-        print_info "Backup dos bancos MySQL..."
-        mysqldump -u root -p$SENHA --all-databases > $BACKUP_DIR/mysql_backup.sql 2>/dev/null
-    fi
-    
-    if systemctl is-active --quiet postgresql; then
-        print_info "Backup dos bancos PostgreSQL..."
-        sudo -u postgres pg_dumpall > $BACKUP_DIR/postgres_backup.sql 2>/dev/null
-    fi
-    
-    # Backup de dados importantes
-    if [ -d "/dados" ]; then
-        print_info "Backup de dados (isso pode levar alguns minutos)..."
-        tar -czf $BACKUP_DIR/dados_backup.tar.gz /dados 2>/dev/null
-    fi
-    
-    print_message "Backup concluído em: $BACKUP_DIR"
+echo -e "${YELLOW}NÍVEL 3: ÚLTIMA CHANCE! Digite 'EXCLUIR TUDO' para confirmar:${NC}"
+read -r confirm3
+if [[ "$confirm3" != "EXCLUIR TUDO" ]]; then
+    echo -e "${GREEN}Operação cancelada.${NC}"
+    exit 0
 fi
 
-# 2. PARAR TODOS OS SERVIÇOS
-print_message "2. Parando todos os serviços..."
+echo -e "${RED}Iniciando limpeza total em 5 segundos... Pressione CTRL+C para cancelar AGORA${NC}"
+sleep 5
 
-SERVICOS=(
-    "nginx"
-    "php8.1-fpm"
-    "mysql"
-    "mariadb"
+# ============================================================================
+# 1. PARAR TODOS OS SERVIÇOS
+# ============================================================================
+echo -e "${YELLOW}[1/10] Parando todos os serviços...${NC}"
+
+services=(
     "postgresql"
-    "postfix"
-    "dovecot"
+    "nginx"
+    "vsftpd"
     "fail2ban"
+    "ssh"
     "ufw"
-    "clamav-daemon"
-    "spamassassin"
-    "amavis"
-    "redis-server"
-    "memcached"
+    "cron"
+    "auditd"
 )
 
-for servico in "${SERVICOS[@]}"; do
-    if systemctl is-active --quiet $servico 2>/dev/null; then
-        print_info "Parando $servico..."
-        systemctl stop $servico
-        systemctl disable $servico 2>/dev/null
+for service in "${services[@]}"; do
+    systemctl stop "$service" 2>/dev/null
+    systemctl disable "$service" 2>/dev/null
+done
+
+# ============================================================================
+# 2. REMOVER PACOTES INSTALADOS
+# ============================================================================
+echo -e "${YELLOW}[2/10] Removendo pacotes instalados...${NC}"
+
+packages=(
+    "postgresql*"
+    "nginx*"
+    "vsftpd*"
+    "fail2ban*"
+    "ufw"
+    "openjdk-*"
+    "auditd"
+    "lynis"
+    "aide*"
+    "unattended-upgrades"
+    "mailutils"
+    "postfix*"
+    "cron"
+    "macchanger"
+)
+
+for pkg in "${packages[@]}"; do
+    apt-get remove --purge -y $pkg 2>/dev/null
+    apt-get autoremove --purge -y 2>/dev/null
+done
+
+# ============================================================================
+# 3. REMOVER USUÁRIOS CRIADOS
+# ============================================================================
+echo -e "${YELLOW}[3/10] Removendo usuários criados...${NC}"
+
+# Identificar usuários criados (UID >= 1000)
+for user in $(awk -F: '$3>=1000 && $3<60000 {print $1}' /etc/passwd); do
+    if [[ "$user" != "ubuntu" && "$user" != "admin" && "$user" != "downloaduser" ]]; then
+        # Só remove se for um dos usuários que criamos
+        continue
+    fi
+    echo "Removendo usuário: $user"
+    pkill -u "$user" 2>/dev/null
+    userdel -r -f "$user" 2>/dev/null
+done
+
+# Remover usuários específicos que criamos
+for user in admin downloaduser; do
+    if id "$user" &>/dev/null; then
+        pkill -u "$user" 2>/dev/null
+        userdel -r -f "$user" 2>/dev/null
     fi
 done
 
-# 3. REMOVER PACOTES E CONFIGURAÇÕES
-print_message "3. Removendo pacotes e configurações..."
+# ============================================================================
+# 4. REMOVER DIRETÓRIOS CRIADOS
+# ============================================================================
+echo -e "${YELLOW}[4/10] Removendo diretórios criados...${NC}"
 
-# 3.1 Remover servidores web
-print_info "Removendo Nginx e PHP..."
-apt-get purge -y nginx* php* --auto-remove
-
-# 3.2 Remover bancos de dados
-print_info "Removendo bancos de dados..."
-apt-get purge -y mysql* mariadb* postgresql* --auto-remove
-
-# 3.3 Remover servidor de email
-print_info "Removendo servidor de email..."
-apt-get purge -y postfix* dovecot* mailutils --auto-remove
-
-# 3.4 Remover ferramentas de segurança
-print_info "Removendo ferramentas de segurança..."
-apt-get purge -y fail2ban* clamav* spamassassin* amavisd* --auto-remove
-
-# 3.5 Remover outras ferramentas
-print_info "Removendo outras ferramentas..."
-apt-get purge -y redis* memcached* --auto-remove
-
-# 4. APAGAR ARQUIVOS DE CONFIGURAÇÃO
-print_message "4. Apagando arquivos de configuração..."
-
-# Diretórios de configuração
-CONFIG_DIRS=(
-    "/etc/nginx"
-    "/etc/php"
-    "/etc/mysql"
-    "/etc/postgresql"
-    "/etc/postfix"
-    "/etc/dovecot"
-    "/etc/fail2ban"
-    "/etc/clamav"
-    "/etc/spamassassin"
-    "/etc/amavis"
-    "/etc/redis"
-    "/etc/memcached"
-    "/etc/phpmyadmin"
-    "/var/lib/mysql"
-    "/var/lib/postgresql"
-    "/var/lib/redis"
-    "/var/lib/clamav"
-    "/var/spool/postfix"
-    "/var/lib/dovecot"
+directories=(
+    "/opt/sistemas"
+    "/srv/ftp"
+    "/var/www/site"
+    "/backup"
+    "/var/log/servidor"
+    "/etc/ssl/private"
+    "/etc/fail2ban/jail.d"
+    "/root/setup_harden_backup_*"
+    "/root/.fingerprint_reset_backup"
 )
 
-for dir in "${CONFIG_DIRS[@]}"; do
-    if [ -d "$dir" ]; then
-        print_info "Removendo $dir..."
-        rm -rf "$dir"
-    fi
+for dir in "${directories[@]}"; do
+    rm -rf "$dir" 2>/dev/null
 done
 
-# 5. APAGAR DADOS E ARQUIVOS
-print_message "5. Apagando dados e arquivos..."
+# ============================================================================
+# 5. RESTAURAR CONFIGURAÇÕES ORIGINAIS DO SSH
+# ============================================================================
+echo -e "${YELLOW}[5/10] Restaurando configurações originais do SSH...${NC}"
 
-# Diretórios de dados
-DATA_DIRS=(
-    "/dados"
-    "/var/www"
-    "/var/www/html"
-    "/var/www/semed"
-    "/var/mail"
-    "/home/$USUARIO/dados"
-    "/home/$USUARIO/.moodle"
-    "/home/$USUARIO/.nextcloud"
-    "/var/log/nginx"
-    "/var/log/mysql"
-    "/var/log/postgresql"
-    "/var/log/postfix"
-    "/var/log/dovecot"
-    "/var/log/fail2ban"
-    "/var/log/clamav"
-    "/tmp/moodle_*"
-    "/tmp/nextcloud_*"
-)
-
-for dir in "${DATA_DIRS[@]}"; do
-    if [ -e "$dir" ]; then
-        print_info "Removendo $dir..."
-        rm -rf "$dir"
-    fi
-done
-
-# 6. APAGAR CONFIGURAÇÕES DE USUÁRIOS
-print_message "6. Resetando configurações de usuários..."
-
-# Remover usuário semed se existir
-if id "$USUARIO" &>/dev/null; then
-    print_info "Removendo usuário $USUARIO..."
-    userdel -r "$USUARIO" 2>/dev/null
+if [ -f "/etc/ssh/sshd_config.bak"* ]; then
+    cp /etc/ssh/sshd_config.bak* /etc/ssh/sshd_config 2>/dev/null
+else
+    # Recriar configuração padrão
+    cat > /etc/ssh/sshd_config << EOF
+# Package generated configuration file
+# See the sshd_config(5) manpage for details
+Port 22
+Protocol 2
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_dsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+UsePrivilegeSeparation yes
+KeyRegenerationInterval 3600
+ServerKeyBits 1024
+SyslogFacility AUTH
+LogLevel INFO
+LoginGraceTime 120
+PermitRootLogin prohibit-password
+StrictModes yes
+RSAAuthentication yes
+PubkeyAuthentication yes
+IgnoreRhosts yes
+RhostsRSAAuthentication no
+HostbasedAuthentication no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+X11Forwarding yes
+X11DisplayOffset 10
+PrintMotd no
+PrintLastLog yes
+TCPKeepAlive yes
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+UsePAM yes
+EOF
 fi
 
-# Remover grupos criados
-for grupo in semed www-data semed-admins; do
-    if getent group "$grupo" >/dev/null; then
-        groupdel "$grupo" 2>/dev/null
-    fi
+# ============================================================================
+# 6. RESTAURAR HOSTNAME PADRÃO
+# ============================================================================
+echo -e "${YELLOW}[6/10] Restaurando hostname...${NC}"
+
+# Gerar hostname padrão baseado no MAC
+new_hostname="ubuntu-$(cat /sys/class/net/$(ip route show default | awk '/default/ {print $5}')/address 2>/dev/null | tr -d ':' | tail -c 7)"
+echo "$new_hostname" > /etc/hostname
+hostname "$new_hostname"
+
+# ============================================================================
+# 7. LIMPAR ARQUIVOS DE CONFIGURAÇÃO
+# ============================================================================
+echo -e "${YELLOW}[7/10] Limpando arquivos de configuração...${NC}"
+
+config_files=(
+    "/etc/apt/sources.list.d/*.list"
+    "/etc/cron.d/backups"
+    "/etc/nginx/sites-available/*"
+    "/etc/nginx/sites-enabled/*"
+    "/etc/postgresql/*/main/pg_hba.conf"
+    "/etc/postgresql/*/main/postgresql.conf"
+    "/etc/vsftpd.conf"
+    "/etc/vsftpd.userlist"
+    "/etc/fail2ban/jail.d/*"
+    "/etc/ufw/*.rules"
+    "/etc/apt/apt.conf.d/20auto-upgrades"
+    "/etc/apt/apt.conf.d/50unattended-upgrades"
+    "/etc/security/limits.d/*.conf"
+    "/etc/sysctl.d/99-du-hardening.conf"
+    "/usr/local/bin/backup-*.sh"
+)
+
+for file in "${config_files[@]}"; do
+    rm -f $file 2>/dev/null
 done
 
-# 7. LIMPAR ARQUIVOS TEMPORÁRIOS
-print_message "7. Limpando arquivos temporários..."
+# ============================================================================
+# 8. RESTAURAR FIREWALL (UFW)
+# ============================================================================
+echo -e "${YELLOW}[8/10] Resetando firewall...${NC}"
 
-rm -rf /tmp/*
-rm -rf /var/tmp/*
-apt-get clean
-apt-get autoclean
-apt-get autoremove -y
+ufw --force disable 2>/dev/null
+ufw --force reset 2>/dev/null
+rm -f /etc/ufw/user.rules 2>/dev/null
+rm -f /etc/ufw/user6.rules 2>/dev/null
 
-# 8. RESETAR FIREWALL
-print_message "8. Resetando firewall..."
-
-ufw --force disable
-ufw --force reset
-iptables -F
-iptables -X
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
-iptables -P INPUT ACCEPT
-iptables -P FORWARD ACCEPT
-iptables -P OUTPUT ACCEPT
-
-# 9. RECRIAR ESTRUTURA BÁSICA
-print_message "9. Recriando estrutura mínima..."
-
-# Recriar usuário semed
-useradd -m -s /bin/bash -G sudo "$USUARIO"
-echo "$USUARIO:$SENHA" | chpasswd
-
-# Criar diretório web básico
-mkdir -p /var/www/html
-echo "<h1>Servidor SEMED - Resetado com sucesso!</h1>" > /var/www/html/index.html
-chmod 755 /var/www/html
-
-# 10. REINSTALAR PACOTES BÁSICOS
-print_message "10. Reinstalando pacotes básicos..."
-
-apt-get update
-apt-get install -y \
-    curl \
-    wget \
-    git \
-    vim \
-    htop \
-    net-tools \
-    ufw \
-    openssh-server \
-    ca-certificates
-
-# 11. REINSTALAR FIREWALL BÁSICO
-print_message "11. Configurando firewall básico..."
-
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-echo "y" | ufw enable
-
-# 12. LIMPAR LOGS E HISTÓRICOS
-print_message "12. Limpando logs e históricos..."
+# ============================================================================
+# 9. LIMPAR LOGS E HISTÓRICOS
+# ============================================================================
+echo -e "${YELLOW}[9/10] Limpando logs e históricos...${NC}"
 
 # Limpar logs do sistema
-find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
-find /var/log -type f -name "*.gz" -delete
-find /var/log -type f -name "*.old" -delete
+find /var/log -type f -name "*.log" -delete 2>/dev/null
+find /var/log -type f -name "*.gz" -delete 2>/dev/null
+find /var/log -type f -name "*.1" -delete 2>/dev/null
+find /var/log -type f -name "*.old" -delete 2>/dev/null
 
-# Limpar histórico dos usuários
-for user_home in /home/* /root; do
-    if [ -f "$user_home/.bash_history" ]; then
-        > "$user_home/.bash_history"
-    fi
-    if [ -f "$user_home/.mysql_history" ]; then
-        > "$user_home/.mysql_history"
-    fi
-    if [ -f "$user_home/.psql_history" ]; then
-        > "$user_home/.psql_history"
-    fi
-done
+# Recriar arquivos de log vazios
+touch /var/log/syslog
+touch /var/log/auth.log
+touch /var/log/kern.log
+touch /var/log/dpkg.log
+touch /var/log/apt/history.log
+touch /var/log/apt/term.log
 
-# 13. VERIFICAÇÃO FINAL
-print_message "13. Verificando limpeza..."
-
-# Verificar serviços removidos
-SERVICOS_VERIFICAR=(
-    "nginx"
-    "mysql"
-    "postgresql"
-    "postfix"
-    "dovecot"
-)
-
-print_info "Serviços ainda presentes no sistema:"
-for servico in "${SERVICOS_VERIFICAR[@]}"; do
-    if systemctl list-unit-files | grep -q "$servico"; then
-        print_warning "⚠️ $servico ainda encontrado"
-    else
-        print_message "✅ $servico removido"
+# Limpar histórico de comandos
+> /root/.bash_history
+for user_home in /home/*; do
+    if [ -d "$user_home" ]; then
+        > "$user_home/.bash_history" 2>/dev/null
     fi
 done
 
-# 14. GERAR RELATÓRIO DE RESET
-print_message "14. Gerando relatório de reset..."
+# Limpar histórico do mysql/client
+> /root/.mysql_history 2>/dev/null
+> /root/.psql_history 2>/dev/null
 
-cat > /root/relatorio_reset.txt <<EOF
-==================================================
-RELATÓRIO DE RESET DO SERVIDOR SEMED
-==================================================
-Data do reset: $(date)
-Executado por: root
+# ============================================================================
+# 10. LIMPAR IDs DE MÁQUINA (OPCIONAL)
+# ============================================================================
+echo -e "${YELLOW}[10/10] Resetando identificadores do sistema...${NC}"
 
-BACKUP REALIZADO:
-----------------
-Diretório de backup: $BACKUP_DIR
-Tamanho do backup: $(du -sh $BACKUP_DIR 2>/dev/null | cut -f1)
+# Backup dos IDs originais (por segurança)
+cp /etc/machine-id /etc/machine-id.backup 2>/dev/null
+cp /var/lib/dbus/machine-id /var/lib/dbus/machine-id.backup 2>/dev/null
 
-SERVIÇOS REMOVIDOS:
-------------------
-✓ Nginx + PHP
-✓ MySQL/MariaDB
-✓ PostgreSQL
-✓ Postfix + Dovecot (email)
-✓ Fail2ban + ClamAV (segurança)
-✓ Redis + Memcached (cache)
+# Gerar novos IDs
+rm -f /etc/machine-id 2>/dev/null
+rm -f /var/lib/dbus/machine-id 2>/dev/null
+systemd-machine-id-setup 2>/dev/null
 
-ARQUIVOS APAGADOS:
------------------
-✓ Configurações (/etc/*)
-✓ Dados (/dados/*)
-✓ Logs (/var/log/*)
-✓ Web (/var/www/*)
-
-ESTADO ATUAL:
-------------
-Sistema base: $(lsb_release -d | cut -f2)
-Kernel: $(uname -r)
-Usuário padrão: $USUARIO
-Senha: $SENHA
-Firewall: Ativo (apenas SSH)
-Espaço em disco: $(df -h / | awk 'NR==2 {print $4}') livres
-
-PRÓXIMOS PASSOS:
----------------
-1. Execute o script de instalação novamente (se desejar)
-2. Ou mantenha apenas como servidor básico
-3. Configure backups externos
-4. Altere a senha do usuário $USUARIO
-
-==================================================
-SERVIDOR RESETADO COM SUCESSO!
-==================================================
-EOF
-
-# RESULTADO FINAL
-echo ""
-echo "=================================================="
-print_message "✅ RESET CONCLUÍDO COM SUCESSO!"
-echo "=================================================="
-echo ""
-print_info "📁 Relatório do reset: /root/relatorio_reset.txt"
-if [[ "$BACKUP_ANTES" == "true" ]]; then
-    print_info "💾 Backup dos dados: $BACKUP_DIR"
-fi
-print_info "👤 Usuário recriado: $USUARIO / $SENHA"
-print_info "🌐 IP do servidor: $(hostname -I | awk '{print $1}')"
-print_info "🔒 Firewall ativo: apenas porta SSH liberada"
-echo ""
-print_warning "⚠️  Recomendações:"
-echo "   - Altere a senha do usuário $USUARIO imediatamente"
-echo "   - Verifique se todos os dados foram realmente apagados"
-echo "   - Execute o script de instalação novamente se necessário"
-echo "   - Configure um backup externo antes de reinstalar"
-echo ""
-
-# Perguntar sobre reinicialização
-read -p "Deseja reiniciar o servidor agora? (s/N): " -n 1 -r
+# ============================================================================
+# FINALIZAÇÃO
+# ============================================================================
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}LIMPEZA CONCLUÍDA!${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo
-if [[ $REPLY =~ ^[Ss]$ ]]; then
-    print_message "Reiniciando em 10 segundos..."
+echo -e "${YELLOW}O sistema foi restaurado para o estado inicial.${NC}"
+echo -e "${YELLOW}Recomendações finais:${NC}"
+echo
+echo "1. Reinicie o sistema agora: sudo reboot"
+echo "2. Após o reboot, faça uma instalação limpa se necessário"
+echo "3. Verifique se todos os serviços padrão estão funcionando"
+echo
+echo -e "${RED}IMPORTANTE: Todos os dados foram permanentemente removidos.${NC}"
+echo
+
+# Perguntar sobre reboot
+echo -e "${YELLOW}Deseja reiniciar o sistema agora? (s/N)${NC}"
+read -r reboot_confirm
+if [[ "$reboot_confirm" =~ ^[sS]$ ]]; then
+    echo "Reiniciando em 10 segundos..."
     sleep 10
     reboot
-else
-    print_info "Lembre-se de reiniciar o servidor em breve para aplicar todas as mudanças."
-    print_info "Para reiniciar manualmente: sudo reboot"
 fi
+
+exit 0
